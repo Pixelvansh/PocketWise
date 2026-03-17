@@ -10,6 +10,11 @@
 </head>
 <body>
 
+  <!-- HAMBURGER (mobile sidebar toggle) -->
+  <button class="sidebar-toggle" id="sidebarToggle" aria-label="Open menu">☰</button>
+  <!-- SIDEBAR BACKDROP -->
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
   <!-- TOAST -->
   <div id="toast" class="toast"></div>
 
@@ -53,6 +58,7 @@
       <button class="nav-item" data-tab="expenses"><span class="nav-icon">◉</span> Expenses</button>
       <button class="nav-item" data-tab="savings"><span class="nav-icon">◇</span> Savings</button>
       <button class="nav-item" data-tab="history"><span class="nav-icon">≡</span> History</button>
+    
     </nav>
 
     <div class="sidebar-footer">
@@ -96,7 +102,7 @@
           <div class="stat-bar-wrap"><div class="stat-bar-fill rose" id="spentBarFill"></div></div>
         </div>
         <div class="stat-card accent-green">
-          <div class="stat-top"><p class="stat-label">Manually Saved</p><span class="stat-icon">💰</span></div>
+          <div class="stat-top"><p class="stat-label">Savings</p><span class="stat-icon">💰</span></div>
           <h3 class="stat-value" id="dashSaved">₹0.00</h3>
           <span class="stat-sub">Set aside by you</span>
         </div>
@@ -109,6 +115,7 @@
 
       <!-- Budget Alert Banner -->
       <div class="alert-banner" id="alertBanner" style="display:none"></div>
+
 
       <!-- Bottom Grid -->
       <div class="dashboard-bottom">
@@ -246,6 +253,8 @@
       </div>
     </section>
 
+      </div>
+
   </main>
 
   <!-- ===== MODALS ===== -->
@@ -272,6 +281,16 @@
     <div class="modal">
       <div class="modal-header"><h3>Add Expense</h3><button class="modal-close" data-close="expenseModal">✕</button></div>
       <div class="modal-body">
+        <!-- AI Smart Input -->
+        <div class="ai-smart-box">
+          <div class="ai-smart-label"><span class="ai-spark">✦</span> AI Smart Fill</div>
+          <div class="ai-smart-row">
+            <input type="text" id="aiSmartInput" class="text-input" placeholder='e.g. "spent 80 on lunch at canteen"'/>
+            <button class="btn-ai-fill" id="runSmartFill">Fill</button>
+          </div>
+          <div class="ai-smart-status" id="aiSmartStatus"></div>
+        </div>
+        <div class="or-divider"><span>or fill manually</span></div>
         <label class="input-label">Category</label>
         <select id="expenseCategorySelect" class="select-input full"></select>
         <label class="input-label mt-10">Amount (₹)</label>
@@ -398,5 +417,24 @@
   </div>
 
   <script src="script.js"></script>
+  <script>
+    /* --- Mobile sidebar toggle --- */
+    (function () {
+      var toggle   = document.getElementById('sidebarToggle');
+      var sidebar  = document.querySelector('.sidebar');
+      var backdrop = document.getElementById('sidebarBackdrop');
+      function openSidebar()  { sidebar.classList.add('open');  backdrop.classList.add('open');  toggle.textContent = '✕'; }
+      function closeSidebar() { sidebar.classList.remove('open'); backdrop.classList.remove('open'); toggle.textContent = '☰'; }
+      toggle.addEventListener('click', function () {
+        sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+      });
+      backdrop.addEventListener('click', closeSidebar);
+      document.querySelectorAll('.nav-item').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          if (window.innerWidth <= 720) closeSidebar();
+        });
+      });
+    })();
+  </script>
 </body>
 </html>
