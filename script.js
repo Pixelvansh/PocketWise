@@ -906,3 +906,257 @@ document.getElementById('currentDate').textContent =
 // ========================
 loadState();
 renderAll();
+
+// ========================
+//  AI HELPERS
+// ========================
+function buildFinancialContext() {
+  const totals   = getCategoryTotals();
+  const spent    = totalExpenses();
+  const saved    = totalManualSavings();
+  const pocket   = state.pocketMoney;
+  const avail    = availableBalance();
+  const budget   = state.budget;
+  const spentPct = pocket > 0 ? ((spent / pocket) * 100).toFixed(1) : 0;
+
+  const categoryBreakdown = Object.entries(totals)
+    .sort((a,b) => b[1].amount - a[1].amount)
+    .map(([,d]) => `  - ${d.icon} ${d.name}: ₹${d.amount.toFixed(2)} (${pocket > 0 ? ((d.amount/spent)*100).toFixed(1) : 0}% of spending, ${d.count} transactions)`)
+    .join('\n');
+
+  const recentExpenses = [...state.expenses]
+    .reverse().slice(0, 8)
+    .map(e => {
+      const cat = state.categories.find(c => c.id === e.categoryId);
+      return `  - ${cat?.name || e.categoryId}: ₹${e.amount} — "${e.desc}" on ${e.date}`;
+    }).join('\n');
+
+  return `Student Finance Summary:
+- Total Pocket Money: ₹${pocket.toFixed(2)}
+- Total Spent: ₹${spent.toFixed(2)} (${spentPct}% of pocket money)
+- Manually Saved: ₹${saved.toFixed(2)}
+- Available Balance: ₹${avail.toFixed(2)}
+- Budget: ${budget.enabled ? `₹${budget.amount} limit set (${pocket > 0 ? ((spent/budget.amount)*100).toFixed(1) : 0}% used)` : 'No budget set'}
+- Total Transactions: ${state.expenses.length}
+
+Spending by Category:
+${categoryBreakdown || '  No expenses yet'}
+
+Recent Expenses:
+${recentExpenses || '  No recent expenses'}`;
+}
+
+async function callClaude(systemPrompt, userMessage) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMessage }]
+    })
+  });
+  const data = await response.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.content.map(b => b.text || '').join('');
+}
+
+// ========================
+//  AI SPENDING ADVISOR (Dashboard)
+// ========================
+document.getElementById('runAdvisorBtn').addEventListener('click', async () => {
+  const body    = document.getElementById('aiAdvisorBody');
+  const loading = document.getElementById('aiAdvisorLoading');
+  const result  = document.getElementById('aiAdvisorResult');
+  const btn     = document.getElementById('runAdvisorBtn');
+
+  if (state.expenses.length === 0 && state.pocketMoney === 0) {
+    body.style.display   = 'block';
+    loading.style.display = 'none';
+    result.textContent   = 'Add some pocket money and expenses first, then I can analyze your finances! 😊';
+    return;
+  }
+
+  btn.disabled          = true;
+  btn.textContent       = 'Analyzing...';
+  body.style.display    = 'block';
+  loading.style.display = 'flex';
+  result.textContent    = '';
+
+  try {
+    const context = buildFinancialContext();
+    const text = await callClaude(
+      `You are a friendly, practical financial advisor for students in India. 
+       Analyze their spending data and give 3-5 specific, actionable insights.
+       Use ₹ for currency. Be encouraging but honest. Keep it concise and easy to read.
+       Use bullet points. Highlight the most important insight first.`,
+      `Here is my financial data:\n\n${context}\n\nGive me a spending analysis with actionable tips.`
+    );
+    loading.style.display = 'none';
+    result.innerHTML = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+  } catch(e) {
+    loading.style.display = 'none';
+    result.textContent = '⚠️ Could not connect to AI. Check your internet connection.';
+  }
+
+  btn.disabled    = false;
+  btn.textContent = 'Analyze Now';
+});
+
+// ========================
+//  AI SMART EXPENSE FILL
+// ========================
+document.getElementById('runSmartFill').addEventListener('click', async () => {
+  const input  = document.getElementById('aiSmartInput').value.trim();
+  const status = document.getElementById('aiSmartStatus');
+  const btn    = document.getElementById('runSmartFill');
+
+  if (!input) { status.textContent = 'Please type something first.'; status.className = 'ai-smart-status error'; return; }
+
+  btn.disabled    = true;
+  btn.textContent = '...';
+  status.textContent = '✦ Thinking...';
+  status.className   = 'ai-smart-status';
+
+  const categoryList = state.categories.map(c => `${c.id}: ${c.name}`).join(', ');
+
+  try {
+    const text = await callClaude(
+      `You are a smart expense parser for a student finance app. 
+       Extract expense details from natural language and return ONLY valid JSON.
+       Available categories: ${categoryList}
+       Pick the most fitting categoryId from the list above.
+       Return exactly this format with no extra text:
+       {"amount": number, "categoryId": "string", "desc": "string"}`,
+      `Parse this expense: "${input}"`
+    );
+
+    const clean = text.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    if (parsed.amount)     document.getElementById('expenseAmount').value = parsed.amount;
+    if (parsed.desc)       document.getElementById('expenseDesc').value   = parsed.desc;
+    if (parsed.categoryId) {
+      const sel = document.getElementById('expenseCategorySelect');
+      if ([...sel.options].some(o => o.value === parsed.categoryId)) {
+        sel.value = parsed.categoryId;
+      }
+    }
+    updateBalanceHint();
+    status.textContent = '✅ Fields filled! Review and confirm.';
+    status.className   = 'ai-smart-status success';
+    document.getElementById('aiSmartInput').value = '';
+  } catch(e) {
+    status.textContent = '⚠️ Could not parse. Try: "spent 80 on lunch"';
+    status.className   = 'ai-smart-status error';
+  }
+
+  btn.disabled    = false;
+  btn.textContent = 'Fill';
+});
+
+document.getElementById('aiSmartInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('runSmartFill').click();
+});
+
+// ========================
+//  AI CHAT
+// ========================
+const chatHistory = [];
+
+const QUICK_PROMPTS = {
+  analyze: 'Give me a detailed analysis of my spending patterns. What am I spending too much on? Where can I cut back?',
+  budget:  'Based on my spending history, suggest a realistic monthly budget for each of my expense categories.',
+  savings: 'Give me 5 practical tips to save more money based on my current spending habits.',
+  report:  'Give me a complete monthly financial report — income, expenses by category, savings, and an overall assessment of my financial health.'
+};
+
+function appendChatMsg(role, text, isLoading = false) {
+  const messages = document.getElementById('aiChatMessages');
+  const div = document.createElement('div');
+  div.className = `ai-chat-msg ${role === 'user' ? 'user-msg' : 'ai-msg'}`;
+
+  if (isLoading) {
+    div.id = 'aiTypingIndicator';
+    div.innerHTML = `
+      <div class="ai-msg-avatar">✦</div>
+      <div class="ai-typing"><span class="ai-dot"></span><span class="ai-dot"></span><span class="ai-dot"></span><span>Thinking...</span></div>`;
+  } else {
+    const avatar = role === 'user' ? '👤' : '✦';
+    const formatted = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    div.innerHTML = `
+      <div class="ai-msg-avatar">${avatar}</div>
+      <div class="ai-msg-bubble">${formatted}</div>`;
+  }
+
+  messages.appendChild(div);
+  messages.scrollTop = messages.scrollHeight;
+  return div;
+}
+
+async function sendChatMessage(userText) {
+  if (!userText.trim()) return;
+
+  const sendBtn  = document.getElementById('aiSendBtn');
+  const chatInput = document.getElementById('aiChatInput');
+
+  appendChatMsg('user', userText);
+  chatHistory.push({ role: 'user', content: userText });
+  chatInput.value = '';
+  sendBtn.disabled = true;
+
+  const typingEl = appendChatMsg('ai', '', true);
+
+  try {
+    const context = buildFinancialContext();
+    const systemPrompt = `You are a friendly, smart financial advisor for a student in India using PocketWise app.
+You have access to their real financial data. Answer questions conversationally and helpfully.
+Use ₹ for currency. Be concise, practical, and encouraging.
+Here is their current financial data:\n\n${context}`;
+
+    const messages = chatHistory.map(m => ({ role: m.role, content: m.content }));
+
+    const response = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: systemPrompt,
+        messages
+      })
+    });
+
+    const data  = await response.json();
+    if (data.error) throw new Error(data.error.message);
+    const reply = data.content.map(b => b.text || '').join('');
+
+    typingEl.remove();
+    appendChatMsg('ai', reply);
+    chatHistory.push({ role: 'assistant', content: reply });
+  } catch(e) {
+    typingEl.remove();
+    appendChatMsg('ai', '⚠️ Could not connect to AI. Please check your internet connection.');
+  }
+
+  sendBtn.disabled = false;
+}
+
+document.getElementById('aiSendBtn').addEventListener('click', () => {
+  sendChatMessage(document.getElementById('aiChatInput').value);
+});
+document.getElementById('aiChatInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendChatMessage(document.getElementById('aiChatInput').value);
+  }
+});
+
+// Quick action buttons
+document.querySelectorAll('.ai-quick-card').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const prompt = QUICK_PROMPTS[btn.dataset.prompt];
+    if (prompt) sendChatMessage(prompt);
+  });
+});
