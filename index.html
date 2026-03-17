@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PocketWise — Student Finance</title>
+  <link rel="stylesheet" href="style.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Playfair+Display:wght@600&display=swap" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
+<body>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast"></div>
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-icon">₹</span>
+      <span class="brand-name">PocketWise</span>
+    </div>
+
+    <div class="balance-card">
+      <div class="balance-label-row">
+        <p class="balance-label">Available Balance</p>
+        <div class="balance-actions">
+          <button class="bal-action-btn" id="openEditMoneyModal" title="Edit total pocket money">✏️</button>
+          <button class="bal-action-btn danger" id="resetPocketMoney" title="Reset pocket money to zero">🗑</button>
+        </div>
+      </div>
+      <h1 class="balance-amount" id="balanceDisplay">₹0.00</h1>
+      <div class="balance-sub-row">
+        <span class="balance-sub-item"><span class="dot dot-blue"></span><span id="sidebarPocket">₹0</span> added</span>
+        <span class="balance-sub-item"><span class="dot dot-rose"></span><span id="sidebarSpent">₹0</span> spent</span>
+      </div>
+      <button class="btn-ghost" id="openAddMoneyModal">+ Add Money</button>
+    </div>
+
+    <!-- Spending Health Ring -->
+    <div class="health-ring-wrap">
+      <svg class="health-ring" viewBox="0 0 80 80">
+        <circle cx="40" cy="40" r="32" class="ring-bg"/>
+        <circle cx="40" cy="40" r="32" class="ring-fill" id="healthRingFill"/>
+      </svg>
+      <div class="health-ring-center">
+        <span class="health-pct" id="healthPct">0%</span>
+        <span class="health-label">used</span>
+      </div>
+    </div>
+
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-tab="dashboard"><span class="nav-icon">◈</span> Dashboard</button>
+      <button class="nav-item" data-tab="expenses"><span class="nav-icon">◉</span> Expenses</button>
+      <button class="nav-item" data-tab="savings"><span class="nav-icon">◇</span> Savings</button>
+      <button class="nav-item" data-tab="history"><span class="nav-icon">≡</span> History</button>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="sf-row">
+        <span>Saved</span>
+        <strong id="sfSaved" class="gold">₹0.00</strong>
+      </div>
+      <div class="sf-row">
+        <span>Remaining</span>
+        <strong id="sfRemaining" class="green">₹0.00</strong>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+
+    <!-- DASHBOARD -->
+    <section class="tab-content active" id="tab-dashboard">
+      <header class="page-header">
+        <div>
+          <h2 class="page-title">Dashboard</h2>
+          <p class="page-subtitle">Your complete financial overview</p>
+        </div>
+        <div class="header-right">
+          <div class="date-badge" id="currentDate"></div>
+          <button class="btn-primary" id="dashAddExpenseBtn">+ Add Expense</button>
+        </div>
+      </header>
+
+      <!-- Stats -->
+      <div class="stats-grid">
+        <div class="stat-card accent-blue">
+          <div class="stat-top"><p class="stat-label">Pocket Money</p><span class="stat-icon">💵</span></div>
+          <h3 class="stat-value" id="dashPocket">₹0.00</h3>
+          <span class="stat-sub">Total added</span>
+        </div>
+        <div class="stat-card accent-rose">
+          <div class="stat-top"><p class="stat-label">Total Spent</p><span class="stat-icon">💸</span></div>
+          <h3 class="stat-value" id="dashSpent">₹0.00</h3>
+          <div class="stat-bar-wrap"><div class="stat-bar-fill rose" id="spentBarFill"></div></div>
+        </div>
+        <div class="stat-card accent-green">
+          <div class="stat-top"><p class="stat-label">Manually Saved</p><span class="stat-icon">💰</span></div>
+          <h3 class="stat-value" id="dashSaved">₹0.00</h3>
+          <span class="stat-sub">Set aside by you</span>
+        </div>
+        <div class="stat-card accent-amber">
+          <div class="stat-top"><p class="stat-label">Remaining</p><span class="stat-icon">🪙</span></div>
+          <h3 class="stat-value" id="dashRemaining">₹0.00</h3>
+          <span class="stat-sub" id="remainingPctLabel">of total</span>
+        </div>
+      </div>
+
+      <!-- Budget Alert Banner -->
+      <div class="alert-banner" id="alertBanner" style="display:none"></div>
+
+      <!-- Bottom Grid -->
+      <div class="dashboard-bottom">
+        <div class="card">
+          <h4 class="card-title">Category Breakdown</h4>
+          <div class="category-bars" id="categoryBars">
+            <p class="empty-msg">No expenses yet.</p>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title-row">
+            <h4 class="card-title">All Expenses</h4>
+            <span class="txn-count-badge" id="txnCountBadge">0</span>
+          </div>
+          <ul class="expense-list" id="dashExpenseList">
+            <li class="empty-msg">No expenses yet.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- EXPENSES TAB -->
+    <section class="tab-content" id="tab-expenses">
+      <header class="page-header">
+        <div>
+          <h2 class="page-title">Expenses</h2>
+          <p class="page-subtitle">Track where your money goes</p>
+        </div>
+        <div class="header-right">
+          <button class="btn-outline" id="openBudgetModal">⚙ Set Budget</button>
+          <button class="btn-outline" id="toggleChartsBtn">◬ View Charts</button>
+          <button class="btn-primary" id="openExpenseModal">+ Add Expense</button>
+        </div>
+      </header>
+
+      <!-- Category Cards -->
+      <div id="expenseMainView">
+        <div class="categories-grid" id="categoriesGrid"></div>
+        <div class="card mt-20">
+          <div class="card-title-row">
+            <h4 class="card-title">Custom Categories</h4>
+            <button class="btn-ghost-sm" id="openCategoryModal">+ New Category</button>
+          </div>
+          <div class="custom-cats" id="customCatsList">
+            <p class="empty-msg">No custom categories yet.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Charts View (hidden by default) -->
+      <div id="expenseChartsView" style="display:none">
+        <div class="charts-grid">
+          <div class="card chart-card">
+            <h4 class="card-title">Expense Distribution</h4>
+            <p class="chart-subtitle">Percentage share per category</p>
+            <div class="donut-wrapper">
+              <canvas id="donutChart"></canvas>
+              <div class="donut-center">
+                <span class="donut-total-label">Total</span>
+                <span class="donut-total-val" id="donutTotalVal">₹0</span>
+              </div>
+            </div>
+            <div class="chart-legend" id="donutLegend"></div>
+          </div>
+          <div class="card chart-card">
+            <h4 class="card-title">Category Comparison</h4>
+            <p class="chart-subtitle">Amount spent per category</p>
+            <div class="bar-wrapper">
+              <canvas id="barChart"></canvas>
+            </div>
+          </div>
+        </div>
+        <div class="card mt-20">
+          <h4 class="card-title">Spending Summary</h4>
+          <div class="summary-table" id="summaryTable">
+            <p class="empty-msg">No expenses to summarize.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- SAVINGS TAB -->
+    <section class="tab-content" id="tab-savings">
+      <header class="page-header">
+        <div>
+          <h2 class="page-title">Savings</h2>
+          <p class="page-subtitle">Money you've manually set aside</p>
+        </div>
+        <button class="btn-primary" id="openManualSavingModal">+ Add Saving</button>
+      </header>
+      <div class="savings-grid">
+        <div class="card savings-total-card">
+          <div class="savings-icon-big">💰</div>
+          <p class="savings-type">Total Saved</p>
+          <h3 class="savings-amount gold" id="totalSavingsDisplay">₹0.00</h3>
+          <p class="savings-desc">Money you have manually set aside</p>
+        </div>
+        <div class="card savings-remaining-card">
+          <div class="savings-icon-big">🪙</div>
+          <p class="savings-type">Remaining Balance</p>
+          <h3 class="savings-amount blue" id="savingsRemainingDisplay">₹0.00</h3>
+          <p class="savings-desc">After expenses &amp; savings</p>
+        </div>
+      </div>
+      <div class="card mt-20">
+        <h4 class="card-title">Savings History</h4>
+        <ul class="expense-list" id="savingsHistoryList">
+          <li class="empty-msg">No savings entries yet.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- HISTORY TAB -->
+    <section class="tab-content" id="tab-history">
+      <header class="page-header">
+        <div>
+          <h2 class="page-title">History</h2>
+          <p class="page-subtitle">All your transactions</p>
+        </div>
+        <button class="btn-danger-sm" id="clearHistoryBtn">🗑 Clear All</button>
+      </header>
+      <div class="card">
+        <div class="filter-row">
+          <select id="filterCategory" class="select-input"><option value="all">All Categories</option></select>
+          <select id="filterType" class="select-input">
+            <option value="all">All Types</option>
+            <option value="expense">Expenses</option>
+            <option value="saving">Savings</option>
+            <option value="income">Income</option>
+          </select>
+        </div>
+        <ul class="expense-list" id="historyList">
+          <li class="empty-msg">No history yet.</li>
+        </ul>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===== MODALS ===== -->
+
+  <!-- Add Money -->
+  <div class="modal-overlay" id="addMoneyModal">
+    <div class="modal">
+      <div class="modal-header"><h3>Add Pocket Money</h3><button class="modal-close" data-close="addMoneyModal">✕</button></div>
+      <div class="modal-body">
+        <label class="input-label">Amount (₹)</label>
+        <input type="number" id="moneyInput" class="text-input" placeholder="e.g. 2000" min="0"/>
+        <label class="input-label mt-10">Note (optional)</label>
+        <input type="text" id="moneyNote" class="text-input" placeholder="e.g. Monthly allowance"/>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost-modal" data-close="addMoneyModal">Cancel</button>
+        <button class="btn-primary" id="confirmAddMoney">Add Money</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Expense -->
+  <div class="modal-overlay" id="expenseModal">
+    <div class="modal">
+      <div class="modal-header"><h3>Add Expense</h3><button class="modal-close" data-close="expenseModal">✕</button></div>
+      <div class="modal-body">
+        <label class="input-label">Category</label>
+        <select id="expenseCategorySelect" class="select-input full"></select>
+        <label class="input-label mt-10">Amount (₹)</label>
+        <input type="number" id="expenseAmount" class="text-input" placeholder="Enter amount" min="0"/>
+        <label class="input-label mt-10">Description</label>
+        <input type="text" id="expenseDesc" class="text-input" placeholder="What did you spend on?"/>
+        <label class="input-label mt-10">Date</label>
+        <input type="date" id="expenseDate" class="text-input"/>
+        <div class="balance-hint" id="balanceHint"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost-modal" data-close="expenseModal">Cancel</button>
+        <button class="btn-primary" id="confirmExpense">Add Expense</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Set Budget -->
+  <div class="modal-overlay" id="budgetModal">
+    <div class="modal">
+      <div class="modal-header"><h3>Set Monthly Budget</h3><button class="modal-close" data-close="budgetModal">✕</button></div>
+      <div class="modal-body">
+        <p class="modal-desc">Set a spending limit. You'll get a warning when you cross 80% and an alert at 100%.</p>
+        <label class="input-label mt-10">Budget Amount (₹)</label>
+        <input type="number" id="budgetInput" class="text-input" placeholder="e.g. 1500" min="0"/>
+        <label class="input-label mt-10" style="display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0">
+          <input type="checkbox" id="budgetEnabled" style="width:16px;height:16px;accent-color:var(--blue)"/>
+          Enable budget limit
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost-modal" data-close="budgetModal">Cancel</button>
+        <button class="btn-primary" id="confirmBudget">Save Budget</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Category -->
+  <div class="modal-overlay" id="categoryModal">
+    <div class="modal">
+      <div class="modal-header"><h3>Add Custom Category</h3><button class="modal-close" data-close="categoryModal">✕</button></div>
+      <div class="modal-body">
+        <label class="input-label">Category Name</label>
+        <input type="text" id="newCategoryName" class="text-input" placeholder="e.g. Entertainment"/>
+        <label class="input-label mt-10">Icon (emoji)</label>
+        <input type="text" id="newCategoryIcon" class="text-input" placeholder="e.g. 🎬" maxlength="2"/>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost-modal" data-close="categoryModal">Cancel</button>
+        <button class="btn-primary" id="confirmCategory">Add Category</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manual Saving -->
+  <div class="modal-overlay" id="manualSavingModal">
+    <div class="modal">
+      <div class="modal-header"><h3>Add Manual Saving</h3><button class="modal-close" data-close="manualSavingModal">✕</button></div>
+      <div class="modal-body">
+        <label class="input-label">Amount (₹)</label>
+        <input type="number" id="manualSavingAmount" class="text-input" placeholder="Enter amount to save" min="0"/>
+        <label class="input-label mt-10">Note</label>
+        <input type="text" id="manualSavingNote" class="text-input" placeholder="e.g. Emergency fund"/>
+        <div class="balance-hint" id="savingHint"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost-modal" data-close="manualSavingModal">Cancel</button>
+        <button class="btn-primary" id="confirmManualSaving">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Pocket Money -->
+  <div class="modal-overlay" id="editMoneyModal">
+    <div class="modal">
+      <div class="modal-header"><h3>Edit Pocket Money</h3><button class="modal-close" data-close="editMoneyModal">✕</button></div>
+      <div class="modal-body">
+        <p class="modal-desc">Correct your total pocket money. This will not affect your recorded expenses or savings — only the total balance will change.</p>
+        <label class="input-label mt-10">Current Total Pocket Money (₹)</label>
+        <input type="number" id="editMoneyInput" class="text-input" placeholder="Enter correct amount" min="0"/>
+        <div class="edit-money-hint" id="editMoneyHint"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost-modal" data-close="editMoneyModal">Cancel</button>
+        <button class="btn-primary" id="confirmEditMoney">Update Balance</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Withdraw from Saving -->
+  <div class="modal-overlay" id="withdrawSavingModal">
+    <div class="modal">
+      <div class="modal-header"><h3>Withdraw from Savings</h3><button class="modal-close" data-close="withdrawSavingModal">✕</button></div>
+      <div class="modal-body">
+        <p class="modal-desc" id="withdrawSavingDesc">Withdraw money back to your available balance.</p>
+        <label class="input-label mt-10">Amount to Withdraw (₹)</label>
+        <input type="number" id="withdrawSavingAmount" class="text-input" placeholder="Enter amount" min="0"/>
+        <div class="balance-hint" id="withdrawHint"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost-modal" data-close="withdrawSavingModal">Cancel</button>
+        <button class="btn-primary" id="confirmWithdrawSaving">Withdraw</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Saving Entry -->
+  <div class="modal-overlay" id="editSavingModal">
+    <div class="modal">
+      <div class="modal-header"><h3>Edit Saving Entry</h3><button class="modal-close" data-close="editSavingModal">✕</button></div>
+      <div class="modal-body">
+        <p class="modal-desc">Correct the amount or note for this saving entry.</p>
+        <label class="input-label mt-10">Amount (₹)</label>
+        <input type="number" id="editSavingAmount" class="text-input" placeholder="Enter correct amount" min="0"/>
+        <label class="input-label mt-10">Note</label>
+        <input type="text" id="editSavingNote" class="text-input" placeholder="e.g. Emergency fund"/>
+        <div class="balance-hint" id="editSavingHint"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-ghost-modal" data-close="editSavingModal">Cancel</button>
+        <button class="btn-primary" id="confirmEditSaving">Save Changes</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
