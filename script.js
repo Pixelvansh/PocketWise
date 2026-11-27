@@ -1,5 +1,3 @@
-// If the Chart.js CDN can't load (offline / blocked), keep the rest of the app working.
-if (typeof Chart === 'undefined') { window.Chart = class { constructor() {} destroy() {} }; }
 
 const DEFAULT_CATEGORIES = [
   { id:'food',       name:'Food',       icon:'🍱', custom:false },
@@ -28,171 +26,19 @@ let donutChartInstance = null;
 let barChartInstance   = null;
 
 
-// ========================
-//  STORAGE: account database on the server + local cache
-// ========================
-const LEGACY_KEY = 'pocketwise_v3';   // old browser-only storage (kept for one-time import)
-let currentUser   = null;   // username while signed in
-let serverVersion = 0;      // version of the data last loaded from / saved to the server
-let dirty         = false;  // local changes that are not on the server yet
-let lastSynced    = null;
-let pushTimer     = null;
-let pushing       = false;
-
-const API = {
-  async req(method, url, body) {
-    let res;
-    try {
-      res = await fetch(url, {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: method === 'GET' ? undefined : JSON.stringify(body || {})
-      });
-    } catch (e) {
-      const err = new Error(location.protocol === 'file:'
-        ? 'This page was opened as a file. Run "npm start" in the PocketWise folder, then open http://localhost:3000 in your browser.'
-        : 'Cannot reach the PocketWise server. Make sure it is running ("npm start") and you opened its address, e.g. http://localhost:3000.');
-      err.status = 0; throw err;
-    }
-    let data = {};
-    try { data = await res.json(); } catch (e) {}
-    if (!res.ok) {
-      const notOurServer = !data.error && [404, 405, 501].includes(res.status);
-      const err = new Error(data.error || (notOurServer
-        ? 'This page is not being served by the PocketWise server (try http://localhost:3000 after "npm start").'
-        : 'Request failed (' + res.status + ')'));
-      err.status = res.status; err.data = data; throw err;
-    }
-    return data;
+function loadState() {
+  const raw = localStorage.getItem('pocketwise_v3');
+  if (raw) {
+    try { state = JSON.parse(raw); } catch(e) {}
   }
-};
-
-function normalizeState(s) {
-  s = (s && typeof s === 'object' && !Array.isArray(s)) ? s : {};
-  const out = Object.assign({
-    pocketMoney: 0, expenses: [], manualSavings: [], categories: [], transactions: [],
-    budget: { enabled: false, amount: 0 },
-    autoSaving: { enabled: false, amount: 0, day: 1, lastRun: null, lastSkipped: null }
-  }, s);
-  ['expenses', 'manualSavings', 'transactions', 'categories'].forEach(k => { if (!Array.isArray(out[k])) out[k] = []; });
-  if (typeof out.pocketMoney !== 'number' || !isFinite(out.pocketMoney)) out.pocketMoney = 0;
-  if (!out.budget) out.budget = { enabled: false, amount: 0 };
-  if (!out.autoSaving) out.autoSaving = { enabled: false, amount: 0, day: 1, lastRun: null, lastSkipped: null };
-  if (!out.categories.length) out.categories = [...DEFAULT_CATEGORIES];
+  if (!state.categories || !state.categories.length) state.categories = [...DEFAULT_CATEGORIES];
+  if (!state.budget) state.budget = { enabled: false, amount: 0 };
+  if (!state.autoSaving) state.autoSaving = { enabled: false, amount: 0, day: 1, lastRun: null, lastSkipped: null };
   DEFAULT_CATEGORIES.forEach(dc => {
-    if (!out.categories.find(c => c.id === dc.id)) out.categories.unshift(dc);
+    if (!state.categories.find(c => c.id === dc.id)) state.categories.unshift(dc);
   });
-  return out;
 }
-
-function esc(v) {
-  return String(v ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-}
-
-// ---- local cache (per user, so the app still opens offline) ----
-function cacheKey() { return currentUser ? 'pocketwise_cache_' + currentUser.toLowerCase() : null; }
-function writeCache() {
-  const k = cacheKey(); if (!k) return;
-  try { localStorage.setItem(k, JSON.stringify({ data: state, version: serverVersion, dirty })); } catch (e) {}
-}
-function readCache() {
-  const k = cacheKey(); if (!k) return null;
-  try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; }
-}
-function readLegacy() {
-  try { return JSON.parse(localStorage.getItem(LEGACY_KEY)); } catch (e) { return null; }
-}
-
-// ---- sync status shown in the sidebar ----
-function setSyncStatus(kind) {
-  const el = document.getElementById('syncStatus');
-  const info = document.getElementById('accSyncInfo');
-  const map = {
-    synced:  ['☁ Synced',              'sync-status synced'],
-    pending: ['⏳ Saving…',            'sync-status pending'],
-    offline: ['⚠ Offline – will retry', 'sync-status offline'],
-    none:    ['☁ …',                   'sync-status']
-  };
-  const [text, cls] = map[kind] || map.none;
-  if (el) { el.textContent = text; el.className = cls; }
-  if (info) {
-    info.textContent = kind === 'synced'
-      ? 'All changes are saved to your account' + (lastSynced ? ' · ' + new Date(lastSynced).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '')
-      : kind === 'pending' ? 'Saving changes…'
-      : kind === 'offline' ? 'Cannot reach the server. Changes are kept on this device and will upload automatically.'
-      : '';
-  }
-}
-
-// Every part of the app calls saveState() after changing `state`.
-function saveState() {
-  if (!currentUser) return;
-  dirty = true;
-  writeCache();
-  setSyncStatus('pending');
-  clearTimeout(pushTimer);
-  pushTimer = setTimeout(pushToServer, 600);
-}
-
-async function pushToServer() {
-  if (!currentUser || pushing || !dirty) return;
-  clearTimeout(pushTimer);
-  pushing = true;
-  const sentJson = JSON.stringify(state);
-  try {
-    const r = await API.req('PUT', '/api/data', { data: JSON.parse(sentJson), baseVersion: serverVersion });
-    serverVersion = r.version;
-    lastSynced = Date.now();
-    dirty = JSON.stringify(state) !== sentJson;   // changed again while we were saving?
-    writeCache();
-    setSyncStatus(dirty ? 'pending' : 'synced');
-    if (dirty) pushTimer = setTimeout(pushToServer, 300);
-  } catch (e) {
-    if (e.status === 409) {
-      // another device saved first: take its version so nothing is silently overwritten
-      try {
-        applyServerData(await API.req('GET', '/api/data'));
-        renderAll();
-        showToast('Your data was changed on another device and has been refreshed. Please repeat your last change.', 'warning');
-      } catch (e2) { setSyncStatus('offline'); }
-    } else if (e.status === 401) {
-      sessionExpired();
-    } else {
-      setSyncStatus('offline');
-      pushTimer = setTimeout(pushToServer, 15000);
-    }
-  } finally {
-    pushing = false;
-  }
-}
-
-function applyServerData(r) {
-  state = normalizeState(r.data);
-  serverVersion = r.version || 0;
-  dirty = false;
-  lastSynced = Date.now();
-  writeCache();
-  setSyncStatus('synced');
-}
-
-// Pick up changes made on another device
-async function pullIfNewer() {
-  if (!currentUser || dirty || pushing) return;
-  try {
-    const r = await API.req('GET', '/api/data');
-    if (dirty || pushing) return;               // user edited while we were fetching
-    if (r.version > serverVersion) {
-      applyServerData(r); renderAll();
-      showToast('Synced changes from another device.', 'info');
-    } else {
-      lastSynced = Date.now(); setSyncStatus('synced');
-    }
-  } catch (e) {
-    if (e.status === 401) sessionExpired(); else setSyncStatus('offline');
-  }
-}
-
+function saveState() { localStorage.setItem('pocketwise_v3', JSON.stringify(state)); }
 
 
 function totalExpenses()      { return state.expenses.reduce((s,e) => s + e.amount, 0); }
@@ -331,7 +177,7 @@ function renderDashboard() {
       div.className = 'category-bar-item';
       div.innerHTML = `
         <div class="category-bar-header">
-          <span>${esc(data.icon)} ${esc(data.name)}</span>
+          <span>${data.icon} ${data.name}</span>
           <span>${fmt(data.amount)} <span class="category-bar-pct">(${pct}%)</span></span>
         </div>
         <div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div>`;
@@ -374,7 +220,7 @@ function renderExpenses() {
     customs.forEach(cat => {
       const chip = document.createElement('div');
       chip.className = 'custom-cat-chip';
-      chip.innerHTML = `<span>${esc(cat.icon)}</span><span>${esc(cat.name)}</span>
+      chip.innerHTML = `<span>${cat.icon}</span><span>${cat.name}</span>
         <button title="Delete">✕</button>`;
       chip.querySelector('button').addEventListener('click', () => deleteCategory(cat.id));
       customList.appendChild(chip);
@@ -389,8 +235,8 @@ function makeCategoryCard(cat, data, totalSpent) {
   const count  = data?.count  || 0;
   const pct    = totalSpent > 0 ? (amount / totalSpent) * 100 : 0;
   card.innerHTML = `
-    <div class="cat-icon">${esc(cat.icon)}</div>
-    <div class="cat-name">${esc(cat.name)}</div>
+    <div class="cat-icon">${cat.icon}</div>
+    <div class="cat-name">${cat.name}</div>
     <div class="cat-amount">${fmt(amount)}</div>
     <div class="cat-count">${count} transaction${count !== 1 ? 's' : ''}</div>
     <div class="cat-budget-bar"><div class="cat-budget-fill" style="width:${pct.toFixed(1)}%"></div></div>`;
@@ -425,7 +271,7 @@ function renderSavings() {
       <div class="txn-left">
         <div class="txn-icon green-bg">💰</div>
         <div>
-          <div class="txn-name">${esc(s.note || 'Manual Saving')}</div>
+          <div class="txn-name">${s.note || 'Manual Saving'}</div>
           <div class="txn-date">${fmtDate(s.date)}</div>
         </div>
       </div>
@@ -505,7 +351,7 @@ function renderCharts() {
     const pct = total > 0 ? ((data.amount / total) * 100).toFixed(1) : 0;
     const item = document.createElement('div');
     item.className = 'legend-item';
-    item.innerHTML = `<div class="legend-dot" style="background:${colors[i]}"></div><span>${esc(data.icon)} ${esc(data.name)} ${pct}%</span>`;
+    item.innerHTML = `<div class="legend-dot" style="background:${colors[i]}"></div><span>${data.icon} ${data.name} ${pct}%</span>`;
     legend.appendChild(item);
   });
 
@@ -538,7 +384,7 @@ function renderCharts() {
   const rows = entries.map(([,data], i) => {
     const pct = total > 0 ? ((data.amount / total) * 100).toFixed(1) : 0;
     return `<tr>
-      <td><span style="color:${colors[i]}">${esc(data.icon)}</span> ${esc(data.name)}</td>
+      <td><span style="color:${colors[i]}">${data.icon}</span> ${data.name}</td>
       <td style="color:var(--rose);font-weight:600">${fmt(data.amount)}</td>
       <td>${data.count}</td>
       <td class="pct-bar-cell">
@@ -582,10 +428,10 @@ function makeExpenseItem(exp, cat) {
   li.className = 'txn-item';
   li.innerHTML = `
     <div class="txn-left">
-      <div class="txn-icon rose-bg">${esc(cat?.icon || '💸')}</div>
+      <div class="txn-icon rose-bg">${cat?.icon || '💸'}</div>
       <div>
-        <div class="txn-name">${esc(exp.desc || cat?.name || 'Expense')}</div>
-        <div class="txn-date">${esc(cat?.name || '')} · ${fmtDate(exp.date)}</div>
+        <div class="txn-name">${exp.desc || cat?.name || 'Expense'}</div>
+        <div class="txn-date">${cat?.name || ''} · ${fmtDate(exp.date)}</div>
       </div>
     </div>
     <div class="txn-right">
@@ -606,10 +452,10 @@ function makeHistoryItem(txn) {
   const iconBg    = isExpense ? 'rose-bg' : isSaving ? 'green-bg' : '';
   li.innerHTML = `
     <div class="txn-left">
-      <div class="txn-icon ${iconBg}">${esc(txn.icon || '💸')}</div>
+      <div class="txn-icon ${iconBg}">${txn.icon || '💸'}</div>
       <div>
-        <div class="txn-name">${esc(txn.desc || '')}</div>
-        <div class="txn-date">${txn.category ? esc(txn.category) + ' · ' : ''}${fmtDate(txn.date)}</div>
+        <div class="txn-name">${txn.desc || ''}</div>
+        <div class="txn-date">${txn.category ? txn.category + ' · ' : ''}${fmtDate(txn.date)}</div>
       </div>
     </div>
     <div class="txn-right">
@@ -851,7 +697,7 @@ function openWithdrawSavingModal(s) {
   _withdrawMax      = s.amount;
   document.getElementById('withdrawSavingAmount').value = '';
   document.getElementById('withdrawSavingDesc').innerHTML =
-    `Saving: <strong style="color:var(--amber)">${esc(s.note || 'Manual Saving')}</strong> &nbsp;|&nbsp; Saved: <strong style="color:var(--green)">${fmt(s.amount)}</strong>`;
+    `Saving: <strong style="color:var(--amber)">${s.note || 'Manual Saving'}</strong> &nbsp;|&nbsp; Saved: <strong style="color:var(--green)">${fmt(s.amount)}</strong>`;
   document.getElementById('withdrawHint').textContent =
     `Max you can withdraw: ${fmt(s.amount)}. The amount returns to your available balance.`;
   openModal('withdrawSavingModal');
@@ -998,7 +844,6 @@ function autoDueDay(d = new Date()) {
 // Runs on load, every minute, and when the tab becomes visible again.
 // Deducts once per month, on/after the chosen day, if the balance covers it.
 function processAutoSaving() {
-  if (!currentUser) return false;
   const a = state.autoSaving;
   if (!a || !a.enabled || !(a.amount > 0)) return false;
   const now = new Date();
@@ -1132,10 +977,8 @@ document.getElementById('filterType').addEventListener('change', renderHistory);
 // ========================
 //  CLEAR ALL
 // ========================
-document.getElementById('clearHistoryBtn').addEventListener('click', async () => {
-  if (!confirm('Clear ALL data?\n\nA backup is saved first, so you can restore it from Account & Backup.')) return;
-  try { await pushToServer(); await API.req('POST', '/api/backups', {}); }
-  catch (e) { if (!confirm('Could not save a backup first (' + e.message + '). Clear anyway?')) return; }
+document.getElementById('clearHistoryBtn').addEventListener('click', () => {
+  if (!confirm('Clear ALL data? This cannot be undone.')) return;
   state = { pocketMoney:0, expenses:[], manualSavings:[], categories:[...DEFAULT_CATEGORIES], transactions:[], budget:{ enabled:false, amount:0 }, autoSaving:{ enabled:false, amount:0, day:1, lastRun:null, lastSkipped:null } };
   saveState(); renderAll();
   showToast('All data cleared.', 'info');
@@ -1195,269 +1038,13 @@ document.getElementById('currentDate').textContent =
   new Date().toLocaleDateString('en-IN', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
 
 // ========================
-//  LOGIN / SIGN UP
-// ========================
-let authMode = 'login';
-function setAuthMode(mode) {
-  authMode = mode;
-  document.querySelectorAll('.auth-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
-  document.getElementById('authSubmit').textContent = mode === 'login' ? 'Log in' : 'Create account';
-  document.getElementById('authHelp').style.display = mode === 'register' ? 'block' : 'none';
-  document.getElementById('authPassword').autocomplete = mode === 'login' ? 'current-password' : 'new-password';
-  document.getElementById('authError').textContent = '';
-}
-function showAuth(msg) {
-  document.getElementById('authOverlay').classList.add('open');
-  document.getElementById('authError').textContent = msg || '';
-  document.getElementById('authPassword').value = '';
-  setTimeout(() => document.getElementById('authUsername').focus(), 50);
-}
-function hideAuth() {
-  document.getElementById('authOverlay').classList.remove('open');
-  document.getElementById('authPassword').value = '';
-  document.getElementById('authError').textContent = '';
-}
-document.querySelectorAll('.auth-tab').forEach(t => t.addEventListener('click', () => setAuthMode(t.dataset.mode)));
-
-document.getElementById('authForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const username = document.getElementById('authUsername').value.trim();
-  const password = document.getElementById('authPassword').value;
-  const btn = document.getElementById('authSubmit');
-  const err = document.getElementById('authError');
-  err.textContent = '';
-  if (!username || !password) { err.textContent = 'Enter username and password.'; return; }
-  btn.disabled = true;
-  try {
-    const r = await API.req('POST', '/api/' + authMode, { username, password });
-    await onSignedIn(r.user.username);
-  } catch (ex) {
-    err.textContent = ex.message;
-  }
-  btn.disabled = false;
-});
-
-function updateAccountUI() {
-  const name = currentUser || 'Not signed in';
-  document.getElementById('accountName').textContent = name;
-  document.getElementById('accountAvatar').textContent = (currentUser || '?').charAt(0);
-  document.getElementById('accUser').textContent = name;
-}
-
-async function onSignedIn(username) {
-  clearTimeout(pushTimer);
-  currentUser = username; serverVersion = 0; dirty = false;
-  try { localStorage.setItem('pocketwise_last_user', username); } catch (e) {}
-
-  let r;
-  try { r = await API.req('GET', '/api/data'); }
-  catch (e) { currentUser = null; throw e; }
-
-  const cache = readCache();
-  if (cache && cache.dirty && cache.data) {
-    // this device has changes that never reached the server (made offline)
-    const keepLocal = cache.version === r.version ||
-      confirm('This device has changes that were never saved to your account, but your account was also changed elsewhere.\n\nOK = keep this device\'s changes (replaces the online copy)\nCancel = use the online copy');
-    if (keepLocal) { state = normalizeState(cache.data); serverVersion = r.version; dirty = true; }
-    else applyServerData(r);
-  } else if (r.data) {
-    applyServerData(r);
-  } else {
-    // brand-new account: offer to bring over data from the old browser-only version
-    state = normalizeState({}); serverVersion = r.version || 0;
-    const legacy = readLegacy();
-    const hasData = legacy && ((legacy.pocketMoney > 0) || (legacy.expenses || []).length || (legacy.manualSavings || []).length);
-    if (hasData && confirm('Found PocketWise data saved in this browser from before accounts existed.\n\nImport it into your account?')) {
-      state = normalizeState(legacy); dirty = true;
-      try { localStorage.setItem(LEGACY_KEY + '_imported', localStorage.getItem(LEGACY_KEY)); localStorage.removeItem(LEGACY_KEY); } catch (e) {}
-    }
-  }
-
-  hideAuth(); updateAccountUI(); renderAll();
-  if (dirty) { writeCache(); setSyncStatus('pending'); pushToServer(); } else setSyncStatus('synced');
-  processAutoSaving();
-}
-
-// Session ended on the server (e.g. password changed elsewhere): keep unsynced data cached, ask to log in again
-function sessionExpired() {
-  clearTimeout(pushTimer);
-  writeCache();
-  currentUser = null; dirty = false; serverVersion = 0;
-  state = normalizeState({}); renderAll(); updateAccountUI();
-  closeModal('accountModal');
-  showAuth('Your session expired. Please log in again.');
-}
-
-function endSession() {
-  clearTimeout(pushTimer);
-  const k = cacheKey(); if (k) { try { localStorage.removeItem(k); } catch (e) {} }
-  try { localStorage.removeItem('pocketwise_last_user'); } catch (e) {}
-  currentUser = null; dirty = false; serverVersion = 0; lastSynced = null;
-  state = normalizeState({}); renderAll(); updateAccountUI(); setSyncStatus('none');
-  closeModal('accountModal');
-  document.getElementById('authUsername').value = '';
-  showAuth();
-}
-
-async function logout() {
-  if (dirty) {
-    await pushToServer();
-    if (dirty && !confirm('Some changes could not be saved to the server yet. Log out anyway and lose them?')) return;
-  }
-  try { await API.req('POST', '/api/logout', {}); } catch (e) {}
-  endSession();
-}
-
-async function bootstrap() {
-  setAuthMode('login');
-  try {
-    const me = await API.req('GET', '/api/me');
-    await onSignedIn(me.user.username);
-  } catch (e) {
-    if (e.status === 401) return showAuth();
-    // server unreachable: open the last signed-in account from this device's cache
-    let last = null; try { last = localStorage.getItem('pocketwise_last_user'); } catch (x) {}
-    if (last) {
-      currentUser = last;
-      const c = readCache();
-      if (c && c.data) {
-        state = normalizeState(c.data); serverVersion = c.version || 0; dirty = !!c.dirty;
-        hideAuth(); updateAccountUI(); renderAll(); setSyncStatus('offline');
-        if (dirty) pushTimer = setTimeout(pushToServer, 15000);
-        return;
-      }
-      currentUser = null;
-    }
-    showAuth(e.message || 'Cannot reach the server.');
-  }
-}
-
-async function syncTick() {
-  if (!currentUser) return;
-  if (dirty) await pushToServer(); else await pullIfNewer();
-  processAutoSaving();
-}
-setInterval(syncTick, 60 * 1000);
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) { if (dirty) pushToServer(); } else syncTick();
-});
-window.addEventListener('online', syncTick);
-document.getElementById('syncStatus').addEventListener('click', syncTick);
-
-// ========================
-//  ACCOUNT & BACKUP
-// ========================
-const BACKUP_LABELS = { auto: 'Automatic', manual: 'Manual', 'before-import': 'Before import', 'before-restore': 'Before restore' };
-
-async function flushPending() { if (dirty) await pushToServer(); }
-
-async function loadBackups() {
-  const list = document.getElementById('backupList');
-  try {
-    const { backups } = await API.req('GET', '/api/backups');
-    if (!backups.length) { list.innerHTML = '<li class="empty-msg">No saved backups yet.</li>'; return; }
-    list.innerHTML = '';
-    backups.forEach(b => {
-      const li = document.createElement('li');
-      li.className = 'backup-item';
-      const when = new Date(b.createdAt).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      li.innerHTML = `<span>${esc(when)}<span class="bk-label">${esc(BACKUP_LABELS[b.label] || b.label)}</span></span><button type="button" class="btn-restore">Restore</button>`;
-      li.querySelector('button').addEventListener('click', () => restoreBackup(b.id, when));
-      list.appendChild(li);
-    });
-  } catch (e) {
-    list.innerHTML = `<li class="empty-msg">${esc(e.message)}</li>`;
-  }
-}
-
-async function restoreBackup(id, when) {
-  if (!confirm(`Restore your data to the backup from ${when}?\n\nYour current data is backed up first.`)) return;
-  try {
-    await flushPending();
-    applyServerData(await API.req('POST', `/api/backups/${id}/restore`, {}));
-    renderAll(); loadBackups();
-    showToast('Backup restored.', 'success');
-  } catch (e) { showToast(e.message, 'error'); }
-}
-
-document.getElementById('openAccountModal').addEventListener('click', () => {
-  updateAccountUI();
-  setSyncStatus(!currentUser ? 'none' : dirty ? 'pending' : 'synced');
-  ['curPassword', 'newPassword'].forEach(id => document.getElementById(id).value = '');
-  const m = document.getElementById('pwMsg'); m.textContent = ''; m.className = 'acc-msg';
-  openModal('accountModal');
-  loadBackups();
-});
-
-document.getElementById('createBackupBtn').addEventListener('click', async () => {
-  try {
-    await flushPending();
-    await API.req('POST', '/api/backups', {});
-    showToast('Backup saved.', 'success'); loadBackups();
-  } catch (e) { showToast(e.message, 'error'); }
-});
-
-document.getElementById('downloadBackupBtn').addEventListener('click', async () => {
-  try {
-    await flushPending();
-    const res = await fetch('/api/export', { credentials: 'same-origin' });
-    if (!res.ok) throw new Error('Could not download backup.');
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `pocketwise-backup-${localDateStr()}.json`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch (e) { showToast(e.message, 'error'); }
-});
-
-document.getElementById('uploadBackupBtn').addEventListener('click', () => document.getElementById('backupFileInput').click());
-document.getElementById('backupFileInput').addEventListener('change', async e => {
-  const file = e.target.files[0];
-  e.target.value = '';
-  if (!file) return;
-  try {
-    const parsed = JSON.parse(await file.text());
-    const data = (parsed && parsed.data && typeof parsed.data === 'object') ? parsed.data : parsed;
-    if (!confirm('Replace ALL your current data with this backup file?\n\nYour current data is backed up first.')) return;
-    await flushPending();
-    applyServerData(await API.req('POST', '/api/import', { data }));
-    renderAll(); loadBackups();
-    showToast('Backup restored from file.', 'success');
-  } catch (ex) {
-    showToast(ex instanceof SyntaxError ? 'That file is not a valid backup.' : ex.message, 'error');
-  }
-});
-
-document.getElementById('changePasswordBtn').addEventListener('click', async () => {
-  const msg = document.getElementById('pwMsg');
-  const cur = document.getElementById('curPassword').value;
-  const nw  = document.getElementById('newPassword').value;
-  try {
-    await API.req('POST', '/api/change-password', { currentPassword: cur, newPassword: nw });
-    msg.textContent = 'Password updated. Other devices were signed out.'; msg.className = 'acc-msg ok';
-    document.getElementById('curPassword').value = ''; document.getElementById('newPassword').value = '';
-  } catch (e) { msg.textContent = e.message; msg.className = 'acc-msg error'; }
-});
-
-document.getElementById('logoutBtn').addEventListener('click', logout);
-
-document.getElementById('deleteAccountBtn').addEventListener('click', async () => {
-  if (!confirm('Delete your account and ALL its data permanently?\n\nThis cannot be undone. Download a backup first if you want to keep a copy.')) return;
-  const password = prompt('Enter your password to confirm:');
-  if (password === null) return;
-  try {
-    await API.req('DELETE', '/api/account', { password });
-    clearTimeout(pushTimer); dirty = false;
-    endSession();
-    showAuth('Your account was deleted.');
-  } catch (e) { showToast(e.message, 'error'); }
-});
-
-// ========================
 //  INIT
 // ========================
-bootstrap();
+loadState();
+renderAll();
+processAutoSaving();
+setInterval(processAutoSaving, 60 * 1000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) processAutoSaving(); });
 
 // ========================
 //  AI HELPERS
@@ -1517,7 +1104,7 @@ async function callClaude(systemPrompt, userMessage) {
 // ========================
 //  AI SPENDING ADVISOR (Dashboard)
 // ========================
-document.getElementById('runAdvisorBtn')?.addEventListener('click', async () => {
+document.getElementById('runAdvisorBtn').addEventListener('click', async () => {
   const body    = document.getElementById('aiAdvisorBody');
   const loading = document.getElementById('aiAdvisorLoading');
   const result  = document.getElementById('aiAdvisorResult');
@@ -1695,10 +1282,10 @@ Here is their current financial data:\n\n${context}`;
   sendBtn.disabled = false;
 }
 
-document.getElementById('aiSendBtn')?.addEventListener('click', () => {
+document.getElementById('aiSendBtn').addEventListener('click', () => {
   sendChatMessage(document.getElementById('aiChatInput').value);
 });
-document.getElementById('aiChatInput')?.addEventListener('keydown', e => {
+document.getElementById('aiChatInput').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     sendChatMessage(document.getElementById('aiChatInput').value);
